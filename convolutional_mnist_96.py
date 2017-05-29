@@ -11,12 +11,12 @@ import time
 tf.logging.set_verbosity(tf.logging.INFO)
 
 #Global variables definition
-ROOT_PATH = '/home/allxone/kaggle/digit-recognizer'
-ROOT_DATA_PATH = ROOT_PATH + '/data'
-TRAIN_FILE_NAME = '/train.csv'
-TEST_FILE_NAME = '/test.csv'
-MODEL_EXPORT_PATH = ROOT_PATH + '/modelExport'
-MODEL_CHECKPOINT_DIR = ROOT_PATH + '/checkpoint'
+ROOT_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/'
+ROOT_DATA_PATH = ROOT_PATH #+ '/data'
+TRAIN_FILE_NAME = 'train.csv'
+TEST_FILE_NAME = 'test.csv'
+MODEL_EXPORT_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/modelExport'
+MODEL_CHECKPOINT_DIR = "/tmp/mnist_model"
 
 SAMPLE = False         #Set to TRUE if you want to SAMPLE the trainig set
 LEARNING_RATE = 0.001
@@ -33,13 +33,18 @@ def get_batched_input_fn(x, y, batch_size=BATCH_SIZE, epochs=EPOCHS, seed=35):
     return tf.train.batch(sliced_input, batch_size=batch_size, num_threads=4)
 
 def get_input_fn(x, y):
-    return x, tf.constant(y.values)
+    return tf.constant(x), tf.constant(y)
 
 #Utility function to rehsape training set
+'''def reshapeDataframe(toReshapeDf, rowDim1, rowDim2):
+        data_frame_size = len(toReshapeDf)
+        #Must be casted to np.float32
+        return tf.constant(toReshapeDf.values.reshape(data_frame_size, rowDim1, rowDim2, 1).astype(np.float32))'''
+
 def reshapeDataframe(toReshapeDf, rowDim1, rowDim2):
         data_frame_size = len(toReshapeDf)
         #Must be casted to np.float32
-        return tf.constant(toReshapeDf.values.reshape(data_frame_size, rowDim1, rowDim2, 1).astype(np.float32))
+        return toReshapeDf.values.reshape(data_frame_size, rowDim1, rowDim2, 1).astype(np.float32)
 
 '''
 Model definition
@@ -65,7 +70,9 @@ def my_model(features, target, mode, params):
         ]
         '''
         print(features.shape)
+        print(target.shape)
         target = tf.one_hot(tf.cast(target, tf.int32), 10, 1, 0)
+        print(target.shape)
         #Stacking 2 fully connected layers
         #features = layers.stack(features, layers.fully_connected, [100, 10])
 
@@ -100,7 +107,6 @@ def my_model(features, target, mode, params):
         with tf.variable_scope('loss'):
             loss = tf.losses.softmax_cross_entropy(target, features)
         
-        #Training optimizer
         with tf.variable_scope('train'):
             train_op = tf.contrib.layers.optimize_loss(
                     loss, 
@@ -124,6 +130,8 @@ def my_model(features, target, mode, params):
 
 
 # Dataset is read as PANDA dataframe, if SAMPLE is TRUE is sampled
+
+
 if SAMPLE:  
         train_df = pd.read_csv(ROOT_DATA_PATH + TRAIN_FILE_NAME).sample(frac=0.10, replace=False, axis=0)
 else:
@@ -134,7 +142,7 @@ data_df = train_df[train_df.columns[1:]]
 label_df = train_df[train_df.columns[0]]
 
 #Sckit learn splitting methods
-x_train, x_test, y_train, y_test = cross_validation.train_test_split(data_df, label_df, test_size=0.1, random_state=35)
+x_train, x_test, y_train, y_test = cross_validation.train_test_split(data_df, label_df, test_size=0.05, random_state=35)
 
 x_train = reshapeDataframe(x_train, 28, 28)
 x_test = reshapeDataframe(x_test, 28, 28)
@@ -145,13 +153,19 @@ start_time = time.time()
 print("Training started at "+str(start_time))
 
 #Validation monitor for TENSORBOARD
-validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(input_fn=lambda:get_input_fn(x_test, y_test), every_n_steps=VALIDATION_STEPS)
-
+#validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(input_fn=lambda:get_input_fn(x_test, y_test), every_n_steps=VALIDATION_STEPS)
+validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(x_test, y_test.values.astype(np.int64), every_n_steps=VALIDATION_STEPS)
+#Config proto for GPU options
+config = tf.ConfigProto(log_device_placement=False)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 1
+ 
 #CLASSIFIER definition
-classifier = learn.Estimator(model_fn=my_model, params=model_params, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=CHECKPOINTS_SECS) , model_dir=MODEL_CHECKPOINT_DIR)
-
+#Config proto can be used only with TF >= 1.2.0
+classifier = learn.Estimator(model_fn=my_model, params=model_params, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=CHECKPOINTS_SECS, session_config=config), model_dir=MODEL_CHECKPOINT_DIR)
 #CLASSIFIER fit (launch train)
-classifier.fit(input_fn=lambda:get_batched_input_fn(x_test, y_test), steps=STEPS) #, monitors=[validation_monitor])
+classifier.fit(input_fn=lambda:get_batched_input_fn(x_train, y_train), steps=STEPS, monitors=[validation_monitor])
+
 
 #Utility code to measure training elapsed time
 elapsed_time = time.time() - start_time
