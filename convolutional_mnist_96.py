@@ -11,18 +11,16 @@ import time
 tf.logging.set_verbosity(tf.logging.INFO)
 
 #Global variables definition
-ROOT_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/'
-ROOT_DATA_PATH = ROOT_PATH #+ '/data'
+ROOT_DATA_PATH = '~/tensorflowMNIST/'
 TRAIN_FILE_NAME = 'train.csv'
 TEST_FILE_NAME = 'test.csv'
-MODEL_EXPORT_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/modelExport'
-MODEL_CHECKPOINT_DIR = "/tmp/mnist_model"
+MODEL_CHECKPOINT_DIR = "~/mnist_model"
 
 SAMPLE = False         #Set to TRUE if you want to SAMPLE the trainig set
 LEARNING_RATE = 0.001
 OPTIMIZER = 'SGD'
 STEPS = 10000
-BATCH_SIZE = 256
+BATCH_SIZE = 20
 CHECKPOINTS_SECS = 30
 VALIDATION_STEPS = 500
 EPOCHS = 1
@@ -142,7 +140,7 @@ data_df = train_df[train_df.columns[1:]]
 label_df = train_df[train_df.columns[0]]
 
 #Sckit learn splitting methods
-x_train, x_test, y_train, y_test = cross_validation.train_test_split(data_df, label_df, test_size=0.05, random_state=35)
+x_train, x_test, y_train, y_test = cross_validation.train_test_split(data_df, label_df, test_size=0.1, random_state=35)
 
 x_train = reshapeDataframe(x_train, 28, 28)
 x_test = reshapeDataframe(x_test, 28, 28)
@@ -153,8 +151,8 @@ start_time = time.time()
 print("Training started at "+str(start_time))
 
 #Validation monitor for TENSORBOARD
-#validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(input_fn=lambda:get_input_fn(x_test, y_test), every_n_steps=VALIDATION_STEPS)
-validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(x_test, y_test.values.astype(np.int64), every_n_steps=VALIDATION_STEPS)
+validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(input_fn=lambda:get_batched_input_fn(x_test, y_test,batch_size=1000), every_n_steps=VALIDATION_STEPS, eval_steps=1)
+#validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(x_test, y_test.values.astype(np.int64), every_n_steps=VALIDATION_STEPS)
 #Config proto for GPU options
 config = tf.ConfigProto(log_device_placement=False)
 config.gpu_options.allow_growth = True
