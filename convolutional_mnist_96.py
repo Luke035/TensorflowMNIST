@@ -1,7 +1,8 @@
-from sklearn import metrics, cross_validation
 import tensorflow as tf
+from sklearn import cross_validation
 from tensorflow.contrib import layers
 from tensorflow.contrib import learn
+from tensorflow.contrib.learn.python.learn.estimators import model_fn as model_fn_lib
 import pandas as pd
 import numpy as np
 import time
@@ -10,23 +11,38 @@ import time
 tf.logging.set_verbosity(tf.logging.INFO)
 
 #Global variables definition
-ROOT_DATA_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/'
+ROOT_DATA_PATH = '~/tensorflowMNIST/'
 TRAIN_FILE_NAME = 'train.csv'
 TEST_FILE_NAME = 'test.csv'
-MODEL_EXPORT_PATH = '/var/ifs/data/hadoop-cloudera5/notebookDir/HUB/lgrazioli/Data/modelExport'
-MODEL_CHECKPOINT_DIR = "/tmp/mnist_model"
-#Set to TRUE if you want to SAMPLE the trainig set
-SAMPLE = False
+MODEL_CHECKPOINT_DIR = "~/mnist_model"
+
+SAMPLE = False         #Set to TRUE if you want to SAMPLE the trainig set
+LEARNING_RATE = 0.001
+OPTIMIZER = 'SGD'
+STEPS = 10000
+BATCH_SIZE = 20
+CHECKPOINTS_SECS = 30
+VALIDATION_STEPS = 500
+EPOCHS = 1
+model_params = {"learning_rate": LEARNING_RATE, "optimizer": OPTIMIZER}
+
+def get_batched_input_fn(x, y, batch_size=BATCH_SIZE, epochs=EPOCHS, seed=35):
+    sliced_input = tf.train.slice_input_producer([x, y.values])
+    return tf.train.batch(sliced_input, batch_size=batch_size, num_threads=4)
+
+def get_input_fn(x, y):
+    return tf.constant(x), tf.constant(y)
 
 #Utility function to rehsape training set
+'''def reshapeDataframe(toReshapeDf, rowDim1, rowDim2):
+        data_frame_size = len(toReshapeDf)
+        #Must be casted to np.float32
+        return tf.constant(toReshapeDf.values.reshape(data_frame_size, rowDim1, rowDim2, 1).astype(np.float32))'''
+
 def reshapeDataframe(toReshapeDf, rowDim1, rowDim2):
         data_frame_size = len(toReshapeDf)
         #Must be casted to np.float32
         return toReshapeDf.values.reshape(data_frame_size, rowDim1, rowDim2, 1).astype(np.float32)
-
-#Utility function to wrap a 2x2 max-pooling operation
-def max_pool_2x2(tensor_in):
-	return tf.nn.max_pool(tensor_in, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
 
 '''
 Model definition
@@ -40,7 +56,7 @@ MNIST model is composed as follows:
 - droput
 - readout_layer: (?, 10) output shape
 '''
-def my_model(features, target):
+def my_model(features, target, mode, params):
         '''
         one-hot Porta il vettore target a una matrice one-hot
         es: [2,1,0,8]
@@ -52,87 +68,68 @@ def my_model(features, target):
         ]
         '''
         print(features.shape)
+        print(target.shape)
         target = tf.one_hot(tf.cast(target, tf.int32), 10, 1, 0)
+        print(target.shape)
         #Stacking 2 fully connected layers
         #features = layers.stack(features, layers.fully_connected, [100, 10])
 
         #First convolutional layer
         with tf.variable_scope('conv_layer1'):
-            features = layers.convolution2d(inputs=features, num_outputs=32, kernel_size=[5,5], data_format='NHWC', activation_fn=tf.nn.relu)
-            features = max_pool_2x2(features)
+            features = layers.convolution2d(inputs=features, num_outputs=32, kernel_size=[5,5], data_format='NHWC', activation_fn=tf.nn.relu )
+            features = layers.max_pool2d(inputs=features, kernel_size=2, stride=2,padding='SAME', data_format='NHWC' )
         #Ogni immagine esce con un numero di canali uguale al num_outputs
         #(28, 28, 1) -> (28, 28, 100)
         
         #Second convolutional layer
         with tf.variable_scope('conv_layer2'):
-            features = layers.convolution2d(inputs=features, num_outputs=64, kernel_size=[5,5], data_format='NHWC', activation_fn=tf.nn.relu)
-            features = max_pool_2x2(features)
-
+            features = layers.convolution2d(inputs=features, num_outputs=64, kernel_size=[5,5], data_format='NHWC', activation_fn=tf.nn.relu )
+            features = layers.max_pool2d(inputs=features, kernel_size=2, stride=2,padding='SAME', data_format='NHWC' )
+  
         # Back to bidimensional space
         features = tf.reshape(features, [- 1, 64 * 7 * 7])
 
         #Fully connected layer
-        features = layers.fully_connected(features, 1024, activation_fn=tf.nn.relu)
+        with tf.variable_scope('fc_layer1'):
+            features = layers.fully_connected(features, 1024, activation_fn=tf.nn.relu)
 
         #Dropout
-        features = layers.dropout(features, keep_prob=0.5, is_training=True)
+        with tf.variable_scope('dropout'):
+            features = layers.dropout(features, keep_prob=0.5, is_training=True)
 
-        #Readout layer
-        features = layers.fully_connected(features, 10, activation_fn=None)
+        #Readout layerinput_fn
+        with tf.variable_scope('fc_layer2'):
+            features = layers.fully_connected(features, 10, activation_fn=None)
 
-        #Batch prediction and loss function
-        prediction, loss = (tf.contrib.learn.models.logistic_regression_zero_init(features, target))
+        #Loss function
+        with tf.variable_scope('loss'):
+            loss = tf.losses.softmax_cross_entropy(target, features)
+        
+        with tf.variable_scope('train'):
+            train_op = tf.contrib.layers.optimize_loss(
+                    loss, 
+                    tf.contrib.framework.get_global_step(),
+                    optimizer = params["optimizer"],
+                    learning_rate = params["learning_rate"]
+            )
 
-        #Training optimizer
-        train_op = tf.contrib.layers.optimize_loss(
-                loss, tf.contrib.framework.get_global_step(),
-                optimizer='SGD',learning_rate=0.001
-        )
-        return {'class': tf.argmax(prediction, 1), 'prob': prediction}, loss, train_op
+        #Dictionaries
+        predictions = {
+                "class": tf.argmax(features, 1)
+        }
+        eval_metric_ops = {"accuracy": tf.metrics.accuracy(tf.argmax(target,1), tf.argmax(features,1))}
 
-'''
-TENSORFLOW model
-'''
-def conv_model(feature, target, mode):
-    """2-layer convolution model."""
-    # Convert the target to a one-hot tensor of shape (batch_size, 10) and
-    # with a on-value of 1 for each one-hot vector of length 10.
-    target = tf.one_hot(tf.cast(target, tf.int32), 10, 1, 0)
+        return model_fn_lib.ModelFnOps(
+                mode = mode,
+                predictions = predictions,
+                loss = loss,
+                train_op = train_op,
+                eval_metric_ops = eval_metric_ops)
 
-    # Reshape feature to 4d tensor with 2nd and 3rd dimensions being
-    # image width and height final dimension being the number of color channels.
-    #feature = tf.reshape(feature, [-1, 28, 28, 1])
-    # First conv layer will compute 32 features for each 5x5 patch
-    with tf.variable_scope('conv_layer1'):
-        h_conv1 = layers.convolution2d(feature, 32, kernel_size=[5, 5], activation_fn=tf.nn.relu)
-        h_pool1 = max_pool_2x2(h_conv1)
-
-    # Second conv layer will compute 64 features for each 5x5 patch.
-    with tf.variable_scope('conv_layer2'):
-        h_conv2 = layers.convolution2d(h_pool1, 64, kernel_size=[5, 5], activation_fn=tf.nn.relu)
-        h_pool2 = max_pool_2x2(h_conv2)
-        # reshape tensor into a batch of vectors
-        h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
-
-    # Densely connected layer with 1024 neurons.
-    h_fc1 = layers.dropout(layers.fully_connected(h_pool2_flat, 1024, activation_fn=tf.nn.relu),
-        keep_prob=0.5,
-        is_training=mode == tf.contrib.learn.ModeKeys.TRAIN)
-    
-    # Compute logits (1 per class) and compute loss.
-    logits = layers.fully_connected(h_fc1, 10, activation_fn=None)
-    loss = tf.losses.softmax_cross_entropy(target, logits)
-
-    # Create a tensor for training op.
-    train_op = layers.optimize_loss(
-        loss,
-        tf.contrib.framework.get_global_step(),
-        optimizer='SGD',
-        learning_rate=0.001)
-
-    return {'class': tf.argmax(logits, 1), 'prob': logits}, loss, train_op
 
 # Dataset is read as PANDA dataframe, if SAMPLE is TRUE is sampled
+
+
 if SAMPLE:  
         train_df = pd.read_csv(ROOT_DATA_PATH + TRAIN_FILE_NAME).sample(frac=0.10, replace=False, axis=0)
 else:
@@ -145,26 +142,34 @@ label_df = train_df[train_df.columns[0]]
 #Sckit learn splitting methods
 x_train, x_test, y_train, y_test = cross_validation.train_test_split(data_df, label_df, test_size=0.1, random_state=35)
 
+x_train = reshapeDataframe(x_train, 28, 28)
+x_test = reshapeDataframe(x_test, 28, 28)
+
 #Utility code to measure training time
 start_time = time.time()
 
 print("Training started at "+str(start_time))
 
 #Validation monitor for TENSORBOARD
-validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(reshapeDataframe(x_test, 28, 28), y_test.values.astype(np.int64), every_n_steps=100)
-
+validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(input_fn=lambda:get_batched_input_fn(x_test, y_test,batch_size=1000), every_n_steps=VALIDATION_STEPS, eval_steps=1)
+#validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(x_test, y_test.values.astype(np.int64), every_n_steps=VALIDATION_STEPS)
+#Config proto for GPU options
+config = tf.ConfigProto(log_device_placement=False)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 1
+ 
 #CLASSIFIER definition
-classifier = learn.Estimator(model_fn=my_model, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=5) , model_dir=MODEL_CHECKPOINT_DIR)
+#Config proto can be used only with TF >= 1.2.0
+classifier = learn.Estimator(model_fn=my_model, params=model_params, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=CHECKPOINTS_SECS, session_config=config), model_dir=MODEL_CHECKPOINT_DIR)
 #CLASSIFIER fit (launch train)
-classifier.fit(reshapeDataframe(x_train, 28, 28), y_train, steps=100000, batch_size = 256, monitors=[validation_monitor])
+classifier.fit(input_fn=lambda:get_batched_input_fn(x_train, y_train), steps=STEPS, monitors=[validation_monitor])
+
 
 #Utility code to measure training elapsed time
 elapsed_time = time.time() - start_time
 print("Training completed in : " + str(elapsed_time)+ " seconds")
 
-#Predict validation set and convert as PANDA dataframe
-predictionList = [i['class'] for i in list(classifier.predict(reshapeDataframe(x_test, 28, 28)))]
-
-# Measure accuracy
-score = metrics.accuracy_score(y_test, predictionList)
-print("Test accuracy " +str(score))
+# Score accuracy
+ev = classifier.evaluate(input_fn=lambda:get_input_fn(x_test, y_test), steps=1)
+print("Loss: %s" % ev["loss"])
+print("Accuracy: %s" % ev["accuracy"])
