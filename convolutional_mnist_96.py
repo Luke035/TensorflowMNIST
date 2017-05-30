@@ -11,18 +11,18 @@ import time
 tf.logging.set_verbosity(tf.logging.INFO)
 
 #Global variables definition
-ROOT_DATA_PATH = '~/tensorflowMNIST/'
+ROOT_DATA_PATH = 'tensorflowMNIST/'
 TRAIN_FILE_NAME = 'train.csv'
 TEST_FILE_NAME = 'test.csv'
-MODEL_CHECKPOINT_DIR = "~/mnist_model"
+MODEL_CHECKPOINT_DIR = "mnist_model_dir"
 
 SAMPLE = False         #Set to TRUE if you want to SAMPLE the trainig set
 LEARNING_RATE = 0.001
 OPTIMIZER = 'SGD'
-STEPS = 10000
-BATCH_SIZE = 20
+STEPS = 50000
+BATCH_SIZE = 128
 CHECKPOINTS_SECS = 30
-VALIDATION_STEPS = 500
+VALIDATION_STEPS = 200
 EPOCHS = 1
 model_params = {"learning_rate": LEARNING_RATE, "optimizer": OPTIMIZER}
 
@@ -127,6 +127,108 @@ def my_model(features, target, mode, params):
                 eval_metric_ops = eval_metric_ops)
 
 
+def peter_net(features, target, mode, params):
+        '''
+        one-hot Porta il vettore target a una matrice one-hot
+        es: [2,1,0,8]
+        [
+        [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+        [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+        ]
+        '''
+        print(features.shape)
+        print(target.shape)
+        target = tf.one_hot(tf.cast(target, tf.int32), 10, 1, 0)
+        print(target.shape)
+        #Stacking 2 fully connected layers
+        #features = layers.stack(features, layers.fully_connected, [100, 10])
+
+        #First convolutional layer
+        with tf.variable_scope('conv_layer1'):
+            features = layers.convolution2d(inputs=features, num_outputs=16, kernel_size=[3,3], data_format='NHWC', activation_fn=tf.nn.relu )
+            #Batch only.... WTF?
+            features = layers.batch_norm(inputs=features, is_training=True)
+            # (28, 28, 1) -> (28, 28, 16)
+
+        with tf.variable_scope('conv_layer2'):
+            features = layers.convolution2d(inputs=features, num_outputs=16, kernel_size=[3,3], data_format='NHWC', activation_fn=tf.nn.relu )
+            #Batch only.... WTF?
+            features = layers.batch_norm(inputs=features, is_training=True)
+            features = layers.max_pool2d(inputs=features, kernel_size=2, stride=2, padding='SAME', data_format='NHWC' )
+            # (28, 28, 16) -> (14, 14, 16)
+
+        #Dropout
+        with tf.variable_scope('dropout1'):
+            features = layers.dropout(features, keep_prob=0.25, is_training=True)
+
+        with tf.variable_scope('conv_layer3'):
+            features = layers.convolution2d(inputs=features, num_outputs=32, kernel_size=[3,3], data_format='NHWC', activation_fn=tf.nn.relu )
+            #Batch only.... WTF?
+            features = layers.batch_norm(inputs=features, is_training=True)
+            # (14, 14, 16) -> (14, 14, 32)
+
+
+        with tf.variable_scope('conv_layer4'):
+            features = layers.convolution2d(inputs=features, num_outputs=32, kernel_size=[3,3], data_format='NHWC', activation_fn=tf.nn.relu )
+            #Batch only.... WTF?
+            features = layers.batch_norm(inputs=features, is_training=True)
+            features = layers.max_pool2d(inputs=features, kernel_size=2, stride=2, padding='SAME', data_format='NHWC' )
+            # (14, 14, 32) -> (7, 7, 32)
+
+        #Dropout
+        with tf.variable_scope('dropout2'):
+            features = layers.dropout(features, keep_prob=0.25, is_training=True)
+
+        # Back to bidimensional space
+        features = tf.reshape(features, [- 1, 32 * 7 * 7])
+
+        #Fully connected layer
+        with tf.variable_scope('fc_layer1'):
+            features = layers.fully_connected(features, 512, activation_fn=tf.nn.relu)
+        
+        #Dropout
+        with tf.variable_scope('dropout3'):
+            features = layers.dropout(features, keep_prob=0.25, is_training=True)
+
+        #Fully connected layer
+        with tf.variable_scope('fc_layer2'):
+            features = layers.fully_connected(features, 1024, activation_fn=tf.nn.relu)
+        
+        #Dropout
+        with tf.variable_scope('dropout4'):
+            features = layers.dropout(features, keep_prob=0.5, is_training=True)
+
+        #Readout layerinput_fn
+        with tf.variable_scope('readout_layer'):
+            features = layers.fully_connected(features, 10, activation_fn=None)
+
+        #Loss function
+        with tf.variable_scope('loss'):
+            loss = tf.losses.softmax_cross_entropy(target, features)
+        
+        with tf.variable_scope('train'):
+            train_op = tf.contrib.layers.optimize_loss(
+                    loss, 
+                    tf.contrib.framework.get_global_step(),
+                    optimizer = params["optimizer"],
+                    learning_rate = params["learning_rate"]
+            )
+
+        #Dictionaries
+        predictions = {
+                "class": tf.argmax(features, 1)
+        }
+        eval_metric_ops = {"accuracy": tf.metrics.accuracy(tf.argmax(target,1), tf.argmax(features,1))}
+
+        return model_fn_lib.ModelFnOps(
+                mode = mode,
+                predictions = predictions,
+                loss = loss,
+                train_op = train_op,
+                eval_metric_ops = eval_metric_ops)
+
 # Dataset is read as PANDA dataframe, if SAMPLE is TRUE is sampled
 
 
@@ -160,7 +262,7 @@ config.gpu_options.per_process_gpu_memory_fraction = 1
  
 #CLASSIFIER definition
 #Config proto can be used only with TF >= 1.2.0
-classifier = learn.Estimator(model_fn=my_model, params=model_params, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=CHECKPOINTS_SECS, session_config=config), model_dir=MODEL_CHECKPOINT_DIR)
+classifier = learn.Estimator(model_fn=peter_net, params=model_params, config=tf.contrib.learn.RunConfig(save_checkpoints_secs=CHECKPOINTS_SECS, session_config=config), model_dir=MODEL_CHECKPOINT_DIR)
 #CLASSIFIER fit (launch train)
 classifier.fit(input_fn=lambda:get_batched_input_fn(x_train, y_train), steps=STEPS, monitors=[validation_monitor])
 
